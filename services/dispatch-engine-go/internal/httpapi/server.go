@@ -4,18 +4,24 @@ import (
     "net/http"
     "time"
 
+    "github.com/GuilhermeSoares009/last-mile-dispatch-eta-optimizer/dispatch-engine/internal/audit"
+    "github.com/GuilhermeSoares009/last-mile-dispatch-eta-optimizer/dispatch-engine/internal/policy"
     "github.com/GuilhermeSoares009/last-mile-dispatch-eta-optimizer/dispatch-engine/internal/ratelimit"
 )
 
 type Server struct {
-    limiter *ratelimit.Limiter
-    mux     *http.ServeMux
+    limiter      *ratelimit.Limiter
+    policyClient *policy.Client
+    auditStore   *audit.Store
+    mux          *http.ServeMux
 }
 
-func NewServer(limiter *ratelimit.Limiter) *Server {
+func NewServer(limiter *ratelimit.Limiter, policyClient *policy.Client, auditStore *audit.Store) *Server {
     server := &Server{
-        limiter: limiter,
-        mux:     http.NewServeMux(),
+        limiter:      limiter,
+        policyClient: policyClient,
+        auditStore:   auditStore,
+        mux:          http.NewServeMux(),
     }
     server.routes()
     return server
@@ -24,6 +30,7 @@ func NewServer(limiter *ratelimit.Limiter) *Server {
 func (s *Server) routes() {
     s.mux.HandleFunc("/api/v1/health", s.handleHealth)
     s.mux.HandleFunc("/api/v1/dispatch", s.handleDispatch)
+    s.mux.HandleFunc("/api/v1/audit/dispatch", s.handleAudit)
 }
 
 func (s *Server) Handler() http.Handler {

@@ -10,13 +10,16 @@ import (
     "syscall"
     "time"
 
+    "github.com/GuilhermeSoares009/last-mile-dispatch-eta-optimizer/dispatch-engine/internal/audit"
     "github.com/GuilhermeSoares009/last-mile-dispatch-eta-optimizer/dispatch-engine/internal/httpapi"
+    "github.com/GuilhermeSoares009/last-mile-dispatch-eta-optimizer/dispatch-engine/internal/policy"
     "github.com/GuilhermeSoares009/last-mile-dispatch-eta-optimizer/dispatch-engine/internal/ratelimit"
 )
 
 const (
     defaultPort           = "8080"
     defaultRequestsPerMin = 120
+    defaultPolicyTimeout  = 100
 )
 
 func main() {
@@ -25,9 +28,13 @@ func main() {
 
     port := getenv("PORT", defaultPort)
     limit := parseInt(getenv("RATE_LIMIT_PER_MIN", ""), defaultRequestsPerMin)
+    policyURL := getenv("POLICY_API_URL", "http://policy-api:8080")
+    policyTimeout := time.Duration(parseInt(getenv("POLICY_TIMEOUT_MS", ""), defaultPolicyTimeout)) * time.Millisecond
 
     limiter := ratelimit.NewLimiter(limit, time.Minute)
-    server := httpapi.NewServer(limiter)
+    policyClient := policy.NewClient(policyURL, policyTimeout)
+    auditStore := audit.NewStore()
+    server := httpapi.NewServer(limiter, policyClient, auditStore)
 
     httpServer := &http.Server{
         Addr:              ":" + port,

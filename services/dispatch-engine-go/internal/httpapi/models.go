@@ -5,6 +5,7 @@ import (
     "strconv"
     "strings"
 
+    "github.com/GuilhermeSoares009/last-mile-dispatch-eta-optimizer/dispatch-engine/internal/audit"
     "github.com/GuilhermeSoares009/last-mile-dispatch-eta-optimizer/dispatch-engine/internal/dispatch"
 )
 
@@ -35,11 +36,15 @@ type dispatchResponse struct {
 }
 
 type dispatchDecision struct {
-    CourierID string  `json:"courierId"`
-    EtaMinutes int64  `json:"etaMinutes"`
-    Fallback  bool    `json:"fallback"`
-    Reason    string `json:"reason"`
-    Score     float64 `json:"score"`
+    CourierID  string  `json:"courierId"`
+    EtaMinutes int64   `json:"etaMinutes"`
+    Fallback   bool    `json:"fallback"`
+    Reason     string  `json:"reason"`
+    Score      float64 `json:"score"`
+}
+
+type auditResponse struct {
+    Entries []audit.Entry `json:"entries"`
 }
 
 type errorResponse struct {
@@ -87,4 +92,15 @@ func (req dispatchRequest) CouriersToDispatch() []dispatch.Courier {
         })
     }
     return couriers
+}
+
+func parseLimit(raw string, fallback int) int {
+    if raw == "" {
+        return fallback
+    }
+    value, err := strconv.Atoi(raw)
+    if err != nil || value <= 0 {
+        return fallback
+    }
+    return value
 }

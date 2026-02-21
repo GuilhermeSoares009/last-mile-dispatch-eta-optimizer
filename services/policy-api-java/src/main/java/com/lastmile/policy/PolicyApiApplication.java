@@ -24,10 +24,12 @@ public final class PolicyApiApplication {
 
     private final ObjectMapper mapper;
     private final RateLimiter rateLimiter;
+    private final AuditStore auditStore;
 
-    private PolicyApiApplication(ObjectMapper mapper, RateLimiter rateLimiter) {
+    private PolicyApiApplication(ObjectMapper mapper, RateLimiter rateLimiter, AuditStore auditStore) {
         this.mapper = mapper;
         this.rateLimiter = rateLimiter;
+        this.auditStore = auditStore;
     }
 
     public static void main(String[] args) throws IOException {
@@ -37,11 +39,13 @@ public final class PolicyApiApplication {
         ObjectMapper mapper = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true);
         RateLimiter limiter = new RateLimiter(rateLimit, Duration.ofMinutes(1));
-        PolicyApiApplication app = new PolicyApiApplication(mapper, limiter);
+        AuditStore auditStore = new AuditStore();
+        PolicyApiApplication app = new PolicyApiApplication(mapper, limiter, auditStore);
 
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/api/v1/health", app::handleHealth);
         server.createContext("/api/v1/policies/evaluate", app::handleEvaluate);
+        server.createContext("/api/v1/audit/policies", app::handleAudit);
         server.setExecutor(Executors.newFixedThreadPool(4));
         server.start();
     }
@@ -117,6 +121,14 @@ public final class PolicyApiApplication {
         String courierId = request.candidates.size() == 1
             ? request.candidates.get(0).courierId
             : "batch";
+        auditStore.add(new AuditEntry(
+            Instant.now(),
+            requestId,
+            traceId,
+            request.priority,
+            request.candidates.size(),
+            multiplier
+        ));
         log(exchange, new LogEntry(
             "policy evaluated",
             traceId,
@@ -127,6 +139,18 @@ public final class PolicyApiApplication {
             durationMs,
             durationMs > LATENCY_BUDGET_MS
         ));
+    }
+
+    private void handleAudit(HttpExchange exchange) throws IOException {
+        if (!allow(exchange)) {
+            return;
+        }
+        if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+            writeJson(exchange, 405, new ErrorResponse("method not allowed"));
+            return;
+        }
+        int limit = parseLimit(queryParam(exchange, "limit"), 50);
+        writeJson(exchange, 200, new AuditResponse(auditStore.list(limit)));
     }
 
     private boolean allow(HttpExchange exchange) throws IOException {
@@ -163,6 +187,33 @@ public final class PolicyApiApplication {
             return realIp.trim();
         }
         return exchange.getRemoteAddress().getAddress().getHostAddress();
+    }
+
+    private String queryParam(HttpExchange exchange, String key) {
+        String query = exchange.getRequestURI().getQuery();
+        if (query == null || query.isBlank()) {
+            return null;
+        }
+        String[] parts = query.split("&");
+        for (String part : parts) {
+            String[] pair = part.split("=", 2);
+            if (pair.length == 2 && key.equals(pair[0])) {
+                return pair[1];
+            }
+        }
+        return null;
+    }
+
+    private int parseLimit(String raw, int fallback) {
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        try {
+            int value = Integer.parseInt(raw.trim());
+            return value > 0 ? value : fallback;
+        } catch (NumberFormatException ex) {
+            return fallback;
+        }
     }
 
     private static String newTraceId() {
@@ -232,6 +283,17 @@ public final class PolicyApiApplication {
 
     private record EvaluateResponse(String requestId, String traceId, double multiplier, List<Adjustment> adjustments) {}
 
+    private record AuditEntry(
+        Instant timestamp,
+        String requestId,
+        String traceId,
+        String priority,
+        int candidateCount,
+        double multiplier
+    ) {}
+
+    private record AuditResponse(List<AuditEntry> entries) {}
+
     private record LogEntry(
         String message,
         String traceId,
@@ -242,4 +304,30 @@ public final class PolicyApiApplication {
         long durationMs,
         boolean budgetExceeded
     ) {}
+
+    private static final class AuditStore {
+        private final CopyOnWriteArrayList<AuditEntry> entries = new CopyOnWriteArrayList<>();
+
+        private void add(AuditEntry entry) {
+            entries.add(entry);
+            if (entries.size() > 1000) {
+                entries.remove(0);
+            }
+        }
+
+        private List<AuditEntry> list(int limit) {
+            int size = entries.size();
+            if (limit <= 0 || limit > size) {
+                limit = size;
+            }
+            List<AuditEntry> result = new ArrayList<>(limit);
+            for (int i = size - 1; i >= size - limit; i--) {
+                if (i < 0) {
+                    break;
+                }
+                result.add(entries.get(i));
+            }
+            return result;
+        }
+    }
 }

@@ -13,7 +13,9 @@ import (
     "strings"
     "time"
 
+    "github.com/GuilhermeSoares009/last-mile-dispatch-eta-optimizer/dispatch-engine/internal/audit"
     "github.com/GuilhermeSoares009/last-mile-dispatch-eta-optimizer/dispatch-engine/internal/dispatch"
+    "github.com/GuilhermeSoares009/last-mile-dispatch-eta-optimizer/dispatch-engine/internal/policy"
 )
 
 const (
@@ -91,7 +93,41 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
         requestID = newID()
     }
 
-    decision, err := dispatch.SelectCourier(payload.CouriersToDispatch())
+    couriers := payload.CouriersToDispatch()
+    policyApplied := false
+    policyTraceID := ""
+    adjustedScores := make(map[string]float64)
+    if s.policyClient != nil {
+        candidates := make([]policy.Candidate, 0, len(couriers))
+        for _, courier := range couriers {
+            candidates = append(candidates, policy.Candidate{
+                CourierID: courier.ID,
+                BaseScore: dispatch.ScoreCourier(courier),
+            })
+        }
+        ctx, cancel := context.WithTimeout(r.Context(), 120*time.Millisecond)
+        defer cancel()
+        response, err := s.policyClient.Evaluate(ctx, policy.EvaluateRequest{
+            RequestID:  requestID,
+            Priority:   payload.Priority,
+            Candidates: candidates,
+        })
+        if err == nil {
+            policyApplied = true
+            policyTraceID = response.TraceID
+            for _, adjustment := range response.Adjustments {
+                adjustedScores[adjustment.CourierID] = adjustment.AdjustedScore
+            }
+        }
+    }
+
+    var decision dispatch.Decision
+    var err error
+    if policyApplied {
+        decision, err = dispatch.SelectWithScores(couriers, adjustedScores)
+    } else {
+        decision, err = dispatch.SelectCourier(couriers)
+    }
     if err != nil {
         status := http.StatusInternalServerError
         message := "dispatch decision failed"
@@ -128,6 +164,18 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
     writeJSON(w, http.StatusOK, response)
 
     durationMs := time.Since(start).Milliseconds()
+    if s.auditStore != nil {
+        s.auditStore.Add(audit.Entry{
+            Timestamp:     time.Now().UTC(),
+            RequestID:     requestID,
+            CourierID:     decision.Courier.ID,
+            Score:         decision.Score,
+            Reason:        decision.Reason,
+            Fallback:      decision.Fallback,
+            PolicyApplied: policyApplied,
+            PolicyTraceID: policyTraceID,
+        })
+    }
     logRequest(r.Context(), logEntry{
         Message:        "dispatch decision",
         TraceID:        traceID,
@@ -140,7 +188,22 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
         BudgetMs:       latencyBudgetMs,
         BudgetExceeded: durationMs > latencyBudgetMs,
         Fallback:       decision.Fallback,
+        PolicyApplied:  policyApplied,
+        PolicyTraceID:  policyTraceID,
     })
+}
+
+func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodGet {
+        writeJSON(w, http.StatusMethodNotAllowed, errorResponse{Error: "method not allowed"})
+        return
+    }
+    if s.auditStore == nil {
+        writeJSON(w, http.StatusOK, auditResponse{Entries: []audit.Entry{}})
+        return
+    }
+    limit := parseLimit(r.URL.Query().Get("limit"), 50)
+    writeJSON(w, http.StatusOK, auditResponse{Entries: s.auditStore.List(limit)})
 }
 
 func readJSON(r *http.Request, dst any) error {
@@ -196,6 +259,8 @@ type logEntry struct {
     BudgetMs       int64  `json:"budgetMs"`
     BudgetExceeded bool   `json:"budgetExceeded,omitempty"`
     Fallback       bool   `json:"fallback,omitempty"`
+    PolicyApplied  bool   `json:"policyApplied,omitempty"`
+    PolicyTraceID  string `json:"policyTraceId,omitempty"`
 }
 
 func logRequest(_ context.Context, entry logEntry) {

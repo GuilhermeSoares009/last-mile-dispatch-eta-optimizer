@@ -22,16 +22,20 @@ docker compose up --build
 
 - `GET /api/v1/health`
 - `POST /api/v1/dispatch`
+- `GET /api/v1/audit/dispatch`
 
 ### Policy API (porta 8085)
 
 - `GET /api/v1/health`
 - `POST /api/v1/policies/evaluate`
+- `GET /api/v1/audit/policies`
 
 ### Variaveis de ambiente
 
 - `PORT` (default: 8080)
 - `RATE_LIMIT_PER_MIN` (default: 120)
+- `POLICY_API_URL` (default: http://policy-api:8080)
+- `POLICY_TIMEOUT_MS` (default: 100)
 
 ## Qualidade (pre-commit)
 Este repositorio usa pre-commit para CR + auditoria ASVS (OWASP ASVS v5.0.0) antes de cada commit.
