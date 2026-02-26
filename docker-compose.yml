@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: lmd
+      POSTGRES_USER: lmd
+      POSTGRES_PASSWORD: lmd
+    ports:
+      - "5436:5432"
+  redis:
+    image: redis:7
+    ports:
+      - "6383:6379"
+  dispatch-engine:
+    build:
+      context: ./services/dispatch-engine-go
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8084:8080"
+  policy-api:
+    build:
+      context: ./services/policy-api-java
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8085:8080"
